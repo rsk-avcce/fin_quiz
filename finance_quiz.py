@@ -3,29 +3,19 @@ import pandas as pd
 import os
 from dotenv import load_dotenv
 
+# Load environment variables
 load_dotenv()
+EXCEL_PATH = os.getenv("EXCEL_FILE_PATH", "Data/Sample.xlsx")
 
-# Set page configuration
-st.set_page_config(page_title="Finance Caselet Quiz", layout="wide")
-
-# Path to your Excel file
-EXCEL_PATH = os.path.join("Data", "Sample.xlsx")
+st.set_page_config(page_title="Finance Quiz", layout="wide")
 
 def load_case_data(sheet_name):
-    """Loads a specific sheet and parses it according to the B1/A3:H3 format."""
     try:
-        # Load the specific sheet
         df_raw = pd.read_excel(EXCEL_PATH, sheet_name=sheet_name, header=None)
-        
-        # B1: Case details (Row 0, Col 1)
         case_details = df_raw.iloc[0, 1]
-        
-        # A3:H3 is Header (Row 2), Data starts at Row 3
         df_questions = df_raw.iloc[3:].copy()
         df_questions.columns = df_raw.iloc[2].tolist()
-        
-        # Remove empty rows
-        df_questions = df_questions.dropna(subset=['Questiod_ID', 'Question'], how='all')
+        df_questions = df_questions.dropna(subset=['Questiod_ID'], how='all')
         
         questions = []
         for _, row in df_questions.iterrows():
@@ -33,109 +23,107 @@ def load_case_data(sheet_name):
                 'case_details': case_details,
                 'id': row.get('Questiod_ID'),
                 'question': row.get('Question'),
-                'options': {
-                    'A': row.get('Option A'),
-                    'B': row.get('Option B'),
-                    'C': row.get('Option C'),
-                    'D': row.get('Option D')
-                },
+                'options': {'A': row.get('Option A'), 'B': row.get('Option B'), 
+                            'C': row.get('Option C'), 'D': row.get('Option D')},
                 'answer': str(row.get('Answer')).strip().upper(),
                 'explanation': row.get('Explanation')
             }
-            if pd.notna(q_data['question']):
-                questions.append(q_data)
+            questions.append(q_data)
         return questions
     except Exception as e:
-        st.error(f"Error loading sheet '{sheet_name}': {e}")
+        st.error(f"Error: {e}")
         return []
 
-# --- Sidebar: Case Selection ---
-st.sidebar.title("Quiz Navigation")
+# Initialize Session States
+if 'results' not in st.session_state:
+    st.session_state.results = {} # Stores {q_idx: is_correct}
+if 'show_summary' not in st.session_state:
+    st.session_state.show_summary = False
 
+st.sidebar.title("Quiz Navigation")
 if os.path.exists(EXCEL_PATH):
-    # Get all sheet names from the Excel file
     xl = pd.ExcelFile(EXCEL_PATH)
     sheet_names = xl.sheet_names
-    
-    selected_sheet = st.sidebar.selectbox("Select a Caselet:", sheet_names)
-    
-    # Reset question index if the sheet changes
+    selected_sheet = st.sidebar.selectbox("Select Caselet:", sheet_names)
+
+    # Reset state if sheet changes
     if "current_sheet" not in st.session_state or st.session_state.current_sheet != selected_sheet:
         st.session_state.current_sheet = selected_sheet
         st.session_state.q_idx = 0
         st.session_state.submitted = False
-        st.session_state.selected_option = None
+        st.session_state.results = {}
+        st.session_state.show_summary = False
+        st.rerun()
 
-    # Load data for the selected sheet
     questions = load_case_data(selected_sheet)
 
-    if questions:
+    if st.session_state.show_summary:
+        # --- SUMMARY VIEW ---
+        st.title(f"Quiz Summary: {selected_sheet}")
+        total = len(questions)
+        answered = len(st.session_state.results)
+        correct = sum(1 for v in st.session_state.results.values() if v is True)
+        wrong = answered - correct
+        accuracy = (correct / answered * 100) if answered > 0 else 0
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Questions", total)
+        col2.metric("Correct", correct)
+        col3.metric("Wrong", wrong)
+        col4.metric("Accuracy", f"{accuracy:.1f}%")
+
+        
+
+        if st.button("Restart Quiz"):
+            st.session_state.show_summary = False
+            st.session_state.q_idx = 0
+            st.session_state.results = {}
+            st.rerun()
+    
+    elif questions:
+        # --- QUESTION VIEW ---
         current_q = questions[st.session_state.q_idx]
-
-        st.title(f"Finance Quiz: {selected_sheet}")
-
-        # 1. Case Details (B1) - Repeated for all questions
-        with st.expander("📖 View Case Details", expanded=True):
+        st.title(f"{selected_sheet}")
+        with st.expander("📖 Case Details", expanded=True):
             st.write(current_q['case_details'])
 
-        st.divider()
-
-        # 2. Question Display
-        st.subheader(f"Question {st.session_state.q_idx + 1}: {current_q['id']}")
-        st.markdown(f"**{current_q['question']}**")
-
-        # 3. Multiple Choice Options
+        st.subheader(f"Question {st.session_state.q_idx + 1}: {current_q['question']}")
+        
         opts = current_q['options']
         labels = [f"Option {k}: {v}" for k, v in opts.items() if pd.notna(v)]
         
-        # Use a form to handle submission cleanly
-        choice = st.radio(
-            "Choose one:",
-            options=labels,
-            index=None if not st.session_state.submitted else list(opts.keys()).index(st.session_state.selected_option),
-            key=f"radio_{selected_sheet}_{st.session_state.q_idx}"
-        )
+        choice = st.radio("Select Answer:", options=labels, index=None, key=f"r_{st.session_state.q_idx}")
 
-        if not st.session_state.submitted:
-            if st.button("Submit Answer"):
-                if choice:
-                    st.session_state.submitted = True
-                    st.session_state.selected_option = choice.split(":")[0].replace("Option ", "").strip()
-                    st.rerun()
+        if st.button("Submit Answer"):
+            if choice:
+                user_letter = choice.split(":")[0].replace("Option ", "").strip()
+                is_correct = user_letter == current_q['answer']
+                st.session_state.results[st.session_state.q_idx] = is_correct
+                
+                if is_correct:
+                    st.success("Correct answer")
                 else:
-                    st.warning("Please select an answer first!")
-
-        # 4. Immediate Feedback & Explanation
-        if st.session_state.submitted:
-            correct_ans = current_q['answer']
-            if st.session_state.selected_option == correct_ans:
-                st.success("✅ Correct answer")
+                    st.error(f"Wrong answer. Correct is {current_q['answer']}")
+                st.info(f"**Explanation:** {current_q['explanation']}")
             else:
-                st.error(f"❌ Wrong answer. Correct: {correct_ans}")
-            
-            st.info(f"**Explanation:**\n\n{current_q['explanation']}")
+                st.warning("Please select an option.")
 
+        # Navigation
         st.divider()
-
-        # 5. Navigation Buttons (Previous / Next)
-        col1, col2, col3 = st.columns([1, 2, 1])
+        nav_prev, nav_mid, nav_next = st.columns([1, 2, 1])
         
-        with col1:
-            if st.button("⬅️ Previous", disabled=(st.session_state.q_idx == 0)):
+        with nav_prev:
+            if st.button("Previous", disabled=(st.session_state.q_idx == 0)):
                 st.session_state.q_idx -= 1
-                st.session_state.submitted = False
-                st.session_state.selected_option = None
                 st.rerun()
 
-        with col3:
-            if st.button("Next ➡️", disabled=(st.session_state.q_idx == len(questions) - 1)):
-                st.session_state.q_idx += 1
-                st.session_state.submitted = False
-                st.session_state.selected_option = None
+        with nav_next:
+            is_last = st.session_state.q_idx == len(questions) - 1
+            btn_label = "Summary" if is_last else "Next"
+            
+            if st.button(btn_label):
+                if is_last:
+                    st.session_state.show_summary = True
+                else:
+                    st.session_state.q_idx += 1
                 st.rerun()
-
-    else:
-        st.warning("This sheet appears to be empty or formatted incorrectly.")
-
-else:
-    st.error(f"File not found at {EXCEL_PATH}. Please check the folder path.")
