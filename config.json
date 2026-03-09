@@ -1,0 +1,11 @@
+{
+    "page_title": "Research Analysis Quiz",
+    "instructions": [
+        "**Selection**: Choose a Quiz Type and a specific Topic from the sidebar.",
+        "You must confirm to start the quiz; once started, the sidebar locks.",
+        "Selecting an option submits your answer immediately and cannot be changed.",
+        "You can navigate through questions and see a complete performance breakdown at the end.",
+        "Sourced from NISM study materials and various educational resources."
+    ],
+    "disclaimer": "These practice questions are sourced from NISM study materials and various educational resources on the Internet. They are intended for educational, learning and review purposes only. The accuracy of the content is not guaranteed by the software provider."
+}
