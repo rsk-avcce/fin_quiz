@@ -27,6 +27,24 @@ CONFIG = load_config()
 
 st.set_page_config(page_title=CONFIG['page_title'], layout="wide")
 
+# --- Helper for Excel Formatting ---
+def format_excel_value(val):
+    """Handles Excel's decimal conversion of percentages and NaN values."""
+    if pd.isna(val):
+        return ""
+    
+    # Check if the value is a float that might be a percentage
+    # In finance sheets, values like 0.08 are usually 8%
+    if isinstance(val, (float, int)):
+        # If the value is a small float, we treat it as a potential percentage 
+        # but only if we want to force that format. 
+        # A safer way is to simply convert to string to avoid 0.675000000001 issues.
+        if isinstance(val, float):
+            # Check if it looks like a clean percentage (e.g., 0.08 -> 8%)
+            # Or just return as a clean string without trailing zeros
+            return f"{val:g}" 
+    return str(val)
+
 def load_quiz_data(file_path, sheet_name, quiz_type):
     try:
         if quiz_type == "Caselet Quiz":
@@ -46,8 +64,13 @@ def load_quiz_data(file_path, sheet_name, quiz_type):
                 'case_details': case_details,
                 'id': row.get('Questiod_ID'),
                 'question': row.get('Question'),
-                'options': {'A': row.get('Option A'), 'B': row.get('Option B'), 
-                            'C': row.get('Option C'), 'D': row.get('Option D')},
+                'options': {
+                    # Apply formatting helper to each option
+                    'A': format_excel_value(row.get('Option A')),
+                    'B': format_excel_value(row.get('Option B')),
+                    'C': format_excel_value(row.get('Option C')),
+                    'D': format_excel_value(row.get('Option D'))
+                },
                 'answer': str(row.get('Answer')).strip().upper(),
                 'explanation': row.get('Explanation')
             }
@@ -59,7 +82,6 @@ def load_quiz_data(file_path, sheet_name, quiz_type):
         return []
 
 def go_home():
-    # Hard reset of all keys including widget keys
     for key in list(st.session_state.keys()):
         del st.session_state[key]
     st.session_state.quiz_mode = "-- Select --"
@@ -77,7 +99,6 @@ quiz_mode = st.sidebar.selectbox(
     key="mode_selector",
     disabled=is_locked
 )
-st.session_state.quiz_mode = quiz_mode
 
 if "last_mode" not in st.session_state or st.session_state.last_mode != quiz_mode:
     st.session_state.last_mode = quiz_mode
@@ -113,22 +134,17 @@ else:
 
 # --- Main App Logic ---
 if quiz_mode == "-- Select --" or selected_sheet == "-- Select --":
-    st.title(CONFIG['page_title'])
+    st.title(CONFIG.get('page_title', "Research Analysis Quiz"))
     st.write("---")
     st.subheader("Welcome, Student!")
-    
-    # Instructions Section
     st.write("### Instructions")
-    for item in CONFIG['instructions']:
+    for item in CONFIG.get('instructions', []):
         st.write(f"- {item}")
-    
-    # Disclaimer Section
-    st.warning(f"**Disclaimer:** {CONFIG['disclaimer']}")
+    st.warning(f"**Disclaimer:** {CONFIG.get('disclaimer', '')}")
 
 else:
     questions = load_quiz_data(PATHS[quiz_mode], selected_sheet, quiz_mode)
     
-    # 1. Confirmation Stage
     if not st.session_state.get('confirmed', False):
         st.title(f"Confirm Start: {selected_sheet}")
         st.write(f"This quiz contains **{len(questions)} questions**.")
@@ -139,7 +155,7 @@ else:
                     img_path = os.path.join(os.path.dirname(PATHS[quiz_mode]), details.replace("IMG:", "").strip())
                     if os.path.exists(img_path): st.image(img_path, width='stretch')
                 else: st.write(details)
-        st.write("Are you ready to begin? The sidebar will be locked once you start.")
+        st.write("Are you ready to begin?")
         col_start, col_cancel = st.columns([1, 5])
         with col_start:
             if st.button("✅ Start Quiz"):
@@ -150,23 +166,20 @@ else:
                 go_home()
                 st.rerun()
 
-    # 2. Summary Stage
     elif st.session_state.get('show_summary', False):
         st.title(f"Performance Summary: {selected_sheet}")
         total = len(questions)
         correct = sum(1 for v in st.session_state.results.values() if v.get('is_correct'))
-        accuracy = (correct / total * 100) if total > 0 else 0
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total Questions", total)
+        c1.metric("Total", total)
         c2.metric("Correct ✅", correct)
         c3.metric("Unanswered 📝", total - len(st.session_state.results))
-        c4.metric("Final Score %", f"{accuracy:.1f}%")
+        c4.metric("Score %", f"{(correct/total*100):.1f}%" if total > 0 else "0%")
         st.divider()
         if st.button("🏠 Goto Home"):
             go_home()
             st.rerun()
 
-    # 3. Checkpoint Stage
     elif st.session_state.get('show_checkpoint', False):
         st.title("⚠️ Unanswered Questions")
         unanswered_indices = [i for i in range(len(questions)) if i not in st.session_state.results]
@@ -183,7 +196,6 @@ else:
                 st.session_state.show_checkpoint = False
                 st.rerun()
 
-    # 4. Quiz Question Stage
     elif questions:
         current_q = questions[st.session_state.q_idx]
         st.title(f"{quiz_mode}: {selected_sheet}")
@@ -193,35 +205,42 @@ else:
                 if isinstance(details, str) and details.startswith("IMG:"):
                     img_path = os.path.join(os.path.dirname(PATHS[quiz_mode]), details.replace("IMG:", "").strip())
                     if os.path.exists(img_path): st.image(img_path, width='stretch')
-                    else: st.error("Image missing.")
                 else: st.write(details)
 
         st.subheader(f"Question {st.session_state.q_idx + 1} of {len(questions)}")
         st.write(f"**{current_q['question']}**")
+        
+        # FIX 1: Remove "Option A:" prefix and show only the value
         opts = current_q['options']
-        labels = [f"Option {k}: {v}" for k, v in opts.items() if pd.notna(v)]
+        # We store the raw mapping to identify the letter later
+        labels = [opts[k] for k in ['A', 'B', 'C', 'D'] if opts[k] != ""]
+        
         already_answered = st.session_state.q_idx in st.session_state.results
 
         def on_answer_select():
             key = f"q_radio_{st.session_state.q_idx}"
-            selected = st.session_state[key]
-            if selected:
-                user_letter = selected.split(":")[0].replace("Option ", "").strip()
+            selected_val = st.session_state[key]
+            if selected_val:
+                # Find which letter (A, B, C, or D) matches the selected value
+                user_letter = [k for k, v in opts.items() if v == selected_val][0]
                 st.session_state.results[st.session_state.q_idx] = {
                     'is_correct': user_letter == current_q['answer'],
-                    'choice_label': selected
+                    'selected_val': selected_val
                 }
 
         st.radio(
-            "Select your answer:", options=labels, 
-            index=labels.index(st.session_state.results[st.session_state.q_idx]['choice_label']) if already_answered else None,
-            key=f"q_radio_{st.session_state.q_idx}", on_change=on_answer_select, disabled=already_answered
+            "Select your answer:", 
+            options=labels, 
+            index=labels.index(st.session_state.results[st.session_state.q_idx]['selected_val']) if already_answered else None,
+            key=f"q_radio_{st.session_state.q_idx}", 
+            on_change=on_answer_select, 
+            disabled=already_answered
         )
 
         if already_answered:
             res = st.session_state.results[st.session_state.q_idx]
             if res['is_correct']: st.success("✅ Correct answer")
-            else: st.error(f"❌ Wrong answer. Correct: Option {current_q['answer']}")
+            else: st.error(f"❌ Wrong answer. The correct option was: {opts[current_q['answer']]}")
             st.info(f"**Explanation:** {current_q['explanation']}")
 
         st.divider()
