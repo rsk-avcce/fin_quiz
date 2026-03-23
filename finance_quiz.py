@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import os
 import json
+import random # Added for shuffling
 from dotenv import load_dotenv
 
 # Load configuration
@@ -25,25 +26,16 @@ def load_config():
 
 CONFIG = load_config()
 
-st.set_page_config(page_title=CONFIG['page_title'], layout="wide")
+st.set_page_config(page_title=CONFIG.get('page_title', "Research Analysis Quiz"), layout="wide")
 
 # --- Helper for Excel Formatting ---
 def format_excel_value(val):
-    """Handles Excel's decimal conversion of percentages and NaN values."""
-    if pd.isna(val):
+    if pd.isna(val) or val == "":
         return ""
-    
-    # Check if the value is a float that might be a percentage
-    # In finance sheets, values like 0.08 are usually 8%
     if isinstance(val, (float, int)):
-        # If the value is a small float, we treat it as a potential percentage 
-        # but only if we want to force that format. 
-        # A safer way is to simply convert to string to avoid 0.675000000001 issues.
         if isinstance(val, float):
-            # Check if it looks like a clean percentage (e.g., 0.08 -> 8%)
-            # Or just return as a clean string without trailing zeros
-            return f"{val:g}" 
-    return str(val)
+            return f"{val:g}"
+    return str(val).strip()
 
 def load_quiz_data(file_path, sheet_name, quiz_type):
     try:
@@ -60,22 +52,28 @@ def load_quiz_data(file_path, sheet_name, quiz_type):
         
         questions = []
         for _, row in df_qs.iterrows():
+            opts_dict = {
+                'A': format_excel_value(row.get('Option A')),
+                'B': format_excel_value(row.get('Option B')),
+                'C': format_excel_value(row.get('Option C')),
+                'D': format_excel_value(row.get('Option D'))
+            }
+            
             q_data = {
                 'case_details': case_details,
                 'id': row.get('Questiod_ID'),
                 'question': row.get('Question'),
-                'options': {
-                    # Apply formatting helper to each option
-                    'A': format_excel_value(row.get('Option A')),
-                    'B': format_excel_value(row.get('Option B')),
-                    'C': format_excel_value(row.get('Option C')),
-                    'D': format_excel_value(row.get('Option D'))
-                },
+                'options': opts_dict,
                 'answer': str(row.get('Answer')).strip().upper(),
                 'explanation': row.get('Explanation')
             }
             if pd.notna(q_data['question']):
                 questions.append(q_data)
+        
+        # --- SHUFFLING LOGIC ---
+        # Randomly shuffle the list of questions before returning
+        random.shuffle(questions)
+        
         return questions
     except Exception as e:
         st.error(f"Error loading data: {e}")
@@ -90,15 +88,10 @@ def go_home():
 
 # --- Sidebar Navigation ---
 st.sidebar.title("📚 Quiz Settings")
-
 is_locked = st.session_state.get('confirmed', False) and not st.session_state.get('show_summary', False)
 
-quiz_mode = st.sidebar.selectbox(
-    "Select Quiz Type:", 
-    ["-- Select --", "Caselet Quiz", "Numericals Quiz"],
-    key="mode_selector",
-    disabled=is_locked
-)
+quiz_mode = st.sidebar.selectbox("Select Quiz Type:", ["-- Select --", "Caselet Quiz", "Numericals Quiz"], key="mode_selector", disabled=is_locked)
+st.session_state.quiz_mode = quiz_mode
 
 if "last_mode" not in st.session_state or st.session_state.last_mode != quiz_mode:
     st.session_state.last_mode = quiz_mode
@@ -112,19 +105,15 @@ if quiz_mode != "-- Select --":
     if os.path.exists(file_path):
         xl = pd.ExcelFile(file_path)
         sheet_options = ["-- Select --"] + xl.sheet_names
-        selected_sheet = st.sidebar.selectbox(
-            "Select Topic/Case:", 
-            sheet_options, 
-            key="sheet_selector",
-            disabled=is_locked
-        )
-        
+        selected_sheet = st.sidebar.selectbox("Select Topic/Case:", sheet_options, key="sheet_selector", disabled=is_locked)
         if selected_sheet != st.session_state.get('current_sheet', "-- Select --"):
             st.session_state.current_sheet = selected_sheet
             st.session_state.confirmed = False
             st.session_state.q_idx = 0
             st.session_state.results = {}
             st.session_state.show_summary = False
+            # Load and shuffle questions only when a new sheet is selected
+            st.session_state.questions = load_quiz_data(PATHS[quiz_mode], selected_sheet, quiz_mode)
             st.rerun()
     else:
         st.sidebar.error("Excel file not found.")
@@ -132,7 +121,7 @@ if quiz_mode != "-- Select --":
 else:
     selected_sheet = "-- Select --"
 
-# --- Main App Logic ---
+# --- Main Logic ---
 if quiz_mode == "-- Select --" or selected_sheet == "-- Select --":
     st.title(CONFIG.get('page_title', "Research Analysis Quiz"))
     st.write("---")
@@ -143,19 +132,22 @@ if quiz_mode == "-- Select --" or selected_sheet == "-- Select --":
     st.warning(f"**Disclaimer:** {CONFIG.get('disclaimer', '')}")
 
 else:
-    questions = load_quiz_data(PATHS[quiz_mode], selected_sheet, quiz_mode)
+    # Use questions stored in session state to maintain the shuffled order during navigation
+    questions = st.session_state.get('questions', [])
     
     if not st.session_state.get('confirmed', False):
         st.title(f"Confirm Start: {selected_sheet}")
         st.write(f"This quiz contains **{len(questions)} questions**.")
+        st.info("Note: Questions will be presented in a randomized order.")
+        
         if quiz_mode == "Caselet Quiz" and questions:
-            with st.expander("🔍 Preview Case Study Details", expanded=True):
+            with st.expander("🔍 Preview Case Details", expanded=True):
                 details = questions[0]['case_details']
                 if isinstance(details, str) and details.startswith("IMG:"):
                     img_path = os.path.join(os.path.dirname(PATHS[quiz_mode]), details.replace("IMG:", "").strip())
                     if os.path.exists(img_path): st.image(img_path, width='stretch')
                 else: st.write(details)
-        st.write("Are you ready to begin?")
+        
         col_start, col_cancel = st.columns([1, 5])
         with col_start:
             if st.button("✅ Start Quiz"):
@@ -198,9 +190,10 @@ else:
 
     elif questions:
         current_q = questions[st.session_state.q_idx]
-        st.title(f"{quiz_mode}: {selected_sheet}")
+        st.title(f"{selected_sheet}")
+        
         if current_q['case_details']:
-            with st.expander("📖 Case Study Details", expanded=True):
+            with st.expander("📖 Case Details", expanded=True):
                 details = current_q['case_details']
                 if isinstance(details, str) and details.startswith("IMG:"):
                     img_path = os.path.join(os.path.dirname(PATHS[quiz_mode]), details.replace("IMG:", "").strip())
@@ -210,18 +203,14 @@ else:
         st.subheader(f"Question {st.session_state.q_idx + 1} of {len(questions)}")
         st.write(f"**{current_q['question']}**")
         
-        # FIX 1: Remove "Option A:" prefix and show only the value
         opts = current_q['options']
-        # We store the raw mapping to identify the letter later
         labels = [opts[k] for k in ['A', 'B', 'C', 'D'] if opts[k] != ""]
-        
         already_answered = st.session_state.q_idx in st.session_state.results
 
         def on_answer_select():
             key = f"q_radio_{st.session_state.q_idx}"
             selected_val = st.session_state[key]
             if selected_val:
-                # Find which letter (A, B, C, or D) matches the selected value
                 user_letter = [k for k, v in opts.items() if v == selected_val][0]
                 st.session_state.results[st.session_state.q_idx] = {
                     'is_correct': user_letter == current_q['answer'],
